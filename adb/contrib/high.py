@@ -748,7 +748,7 @@ class HighDevice(object):
       parts = line.split(u': ', 2)
       if len(parts) == 2:
         key, value = parts
-        match = re.match(ur'^(\d+)K / (\d+)K.*', value)
+        match = re.match(r'^(\d+)K / (\d+)K.*', value)
         if match:
           props[key.lstrip()] = {
               'free_mb': round(float(match.group(1)) / 1024., 1),
