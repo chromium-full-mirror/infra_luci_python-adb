@@ -97,7 +97,7 @@ def _ParcelToList(lines):
         '([0-9a-f ]{8}) \'.{16}\'\\)?', line)
     if not match:
       break
-    for i in xrange(1, 5):
+    for i in range(1, 5):
       group = match.group(i)
       char = group[4:8]
       if char != '    ':
@@ -980,9 +980,9 @@ class HighDevice(object):
     # There's a small race condition in there but it's assumed only this process
     # is doing something on the device at this point.
     choices = string.ascii_letters + string.digits
-    for _ in xrange(5):
+    for _ in range(5):
       name = '/data/local/tmp/' + prefix + ''.join(
-          random.choice(choices) for _ in xrange(5)) + suffix
+          random.choice(choices) for _ in range(5)) + suffix
       mode, _, _ = self.Stat(name)
       if mode:
         continue
