@@ -19,7 +19,6 @@ The device must be running an user-debug build or commonly said as "rooted".
 """
 
 import argparse
-import cStringIO
 import logging
 import os
 import pipes
