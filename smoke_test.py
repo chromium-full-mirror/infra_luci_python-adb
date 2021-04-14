@@ -18,6 +18,9 @@
 The device must be running an user-debug build or commonly said as "rooted".
 """
 
+from __future__ import absolute_import
+from __future__ import print_function
+
 import argparse
 import logging
 import os
@@ -29,9 +32,8 @@ import tempfile
 import time
 import unittest
 
-
+from six.moves import map
 import usb1
-
 
 from adb import adb_protocol
 from adb import common
@@ -57,7 +59,7 @@ def GetOnlyDevice(on_error, timeout_ms=1000):
     print('Available devices:')
     for handle in handles:
       path = '/'.join(map(str, handle.port_path))
-      print('%s - %s' % (handle.serial_number, path))
+      print(('%s - %s' % (handle.serial_number, path)))
     on_error('Use exactly one of --serial or --usb-path')
 
   # Choose the single device connected directly.
@@ -103,7 +105,7 @@ class Test(unittest.TestCase):
   def safe(self):
     """Open the device and ensure it's running as root."""
     self.assertEqual(None, self.cmd)
-    port_path = map(int, self.PORT_PATH.split('/'))
+    port_path = list(map(int, self.PORT_PATH.split('/')))
     self.cmd = adb_commands_safe.AdbCommandsSafe.ConnectDevice(
         port_path=port_path, banner='python-adb', rsa_keys=self.KEYS,
         on_error=None, default_timeout_ms=10000, auth_timeout_ms=10000,
@@ -114,7 +116,7 @@ class Test(unittest.TestCase):
   def high(self):
     """Open the device and ensure it's running as root."""
     self.assertEqual(None, self.cmd)
-    port_path = map(int, self.PORT_PATH.split('/'))
+    port_path = list(map(int, self.PORT_PATH.split('/')))
     self.cmd = high.HighDevice.ConnectDevice(
         port_path=port_path, banner='python-adb', on_error=None,
         default_timeout_ms=10000, auth_timeout_ms=10000, lost_timeout_ms=10000)
@@ -361,7 +363,7 @@ class Test(unittest.TestCase):
     ips = self.cmd.GetIPs()
     self.assertTrue(ips)
     self.assertTrue(
-        all(re.match(r'^\d+\.\d+\.\d+\.\d+$', v) for v in ips.itervalues()), ips)
+        all(re.match(r'^\d+\.\d+\.\d+\.\d+$', v) for v in ips.values()), ips)
 
     last_uid = self.cmd.GetLastUID()
     self.assertTrue(2000 < last_uid < 200000)

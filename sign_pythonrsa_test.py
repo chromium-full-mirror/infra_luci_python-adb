@@ -13,17 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import absolute_import
+
 import logging
 import sys
 import unittest
-
 
 from adb import sign_pythonrsa
 
 
 class Test(unittest.TestCase):
   # openssl genrsa 2048 | openssl pkcs8 -topk8 -inform pem -outform pem -nocrypt
-  TEST_KEY = r"""
+  TEST_KEY = b"""
 -----BEGIN PRIVATE KEY-----
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDkX+itb6GgmKSI
 9+1vnYCZvm8edqB9DSVuQUnKjougISl6m74U5YR0dsonpgaHttAEtlwCpY8gS5tA
@@ -57,7 +58,7 @@ oShjkmSqylt4CG34EcCl+JkRTZVFsvp4f8gxC1yQasPo9xjB3DC7maanjp70uMLw
   def test_sign(self):
     # Does not crash => works.
     signer = sign_pythonrsa.PythonRSASigner('pub', self.TEST_KEY)
-    self.assertTrue(signer.Sign('data to sign'))
+    self.assertTrue(signer.Sign(b'data to sign'))
 
 
 if __name__ == '__main__':
