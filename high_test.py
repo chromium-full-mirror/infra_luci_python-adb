@@ -18,6 +18,7 @@ from __future__ import absolute_import
 import logging
 import sys
 import unittest
+from unittest import mock
 
 from adb.contrib import high
 
@@ -53,6 +54,153 @@ class TestAndroid(unittest.TestCase):
     cache = high.DeviceCache(None, None, None, None, None)
     self.assertEqual(
         u'355236058685894', high.HighDevice(device, cache).GetIMEI())
+
+
+class TestGetTemperatures(unittest.TestCase):
+  def setUp(self):
+    device = MockDevice([])
+    cache = high.DeviceCache({'ro.build.version.sdk': 30}, {}, {}, {}, {})
+    self.high_device = high.HighDevice(device, cache)
+
+  def test_temperature_fallback_unused_if_default_path_works(self):
+    """Ensures the fallback is only used if necessary."""
+    with mock.patch.object(self.high_device,
+                           '_GetTemperaturesFromSysFiles',
+                           return_value={'sensor': 1.0}):
+      with mock.patch.object(self.high_device,
+                             '_GetTemperaturesFromThermalService',
+                             side_effect=RuntimeError):
+        temperature_data = self.high_device.GetTemperatures()
+    self.assertEqual(temperature_data, {'sensor': 1.0})
+
+  def test_temperature_fallback_sdk_level_below_minimum(self):
+    """Ensures that the fallback exits early below Android 10."""
+    self.high_device.cache.build_props['ro.build.version.sdk'] = 28
+    with mock.patch.object(
+        self.high_device, 'Dumpsys', side_effect=RuntimeError):
+      temperature_data = self.high_device._GetTemperaturesFromThermalService()
+    self.assertEqual(temperature_data, {})
+
+  def test_temperature_fallback_dumpsys_failure(self):
+    """Ensures dumpsys failures are handled gracefully."""
+    with self.assertLogs(level='ERROR') as log_manager:
+      with mock.patch.object(self.high_device, 'Dumpsys', return_value=None):
+        temperature_data = self.high_device._GetTemperaturesFromThermalService()
+      self.assertIn(
+          'ERROR:adb.high:Failed to run "dumpsys thermalservice" during '
+          'fallback temperature collection', log_manager.output)
+    self.assertEqual(temperature_data, {})
+
+  def test_temperature_fallback_happy_path(self):
+    """Ensures the temperature fallback happy path works as expected."""
+    with mock.patch.object(self.high_device, 'Dumpsys', return_value='foo'):
+      with mock.patch.object(high,
+                             '_ParseThermalServiceOutput',
+                             return_value={'sensor': 1.0}) as parse_mock:
+        temperature_data = self.high_device._GetTemperaturesFromThermalService()
+        parse_mock.assert_called_with('foo')
+    self.assertEqual(temperature_data, {'sensor': 1.0})
+
+  def test_temperature_parsing_happy_path(self):
+    """Ensures the temperature parsing happy path works as expected."""
+    # Real "dumpsys thermalservice" output from a Samsung S24.
+    # pylint: disable=line-too-long
+    dumpsys_output = """
+IsStatusOverride: false
+ThermalEventListeners:
+    callbacks: 1
+    killed: false
+    broadcasts count: -1
+ThermalStatusListeners:
+    callbacks: 4
+    killed: false
+    broadcasts count: -1
+Thermal Status: 0
+Cached temperatures:
+    Temperature{mValue=0.0, mType=2, mName=SUBBAT, mStatus=0}
+    Temperature{mValue=26.7, mType=0, mName=AP, mStatus=0}
+    Temperature{mValue=21.7, mType=12, mName=CP, mStatus=0}
+    Temperature{mValue=20.8, mType=5, mName=PA, mStatus=0}
+    Temperature{mValue=18.8, mType=2, mName=BAT, mStatus=0}
+    Temperature{mValue=19.7, mType=4, mName=USB, mStatus=0}
+    Temperature{mValue=23.3, mType=3, mName=SKIN, mStatus=0}
+HAL Ready: true
+HAL connection:
+    ThermalHAL AIDL 1  connected: yes
+Current temperatures from HAL:
+    Temperature{mValue=19.1, mType=0, mName=AP, mStatus=0}
+    Temperature{mValue=18.6, mType=2, mName=BAT, mStatus=0}
+    Temperature{mValue=19.0, mType=12, mName=CP, mStatus=0}
+    Temperature{mValue=19.1, mType=5, mName=PA, mStatus=0}
+    Temperature{mValue=21.7, mType=3, mName=SKIN, mStatus=0}
+    Temperature{mValue=0.0, mType=2, mName=SUBBAT, mStatus=0}
+    Temperature{mValue=19.4, mType=4, mName=USB, mStatus=0}
+Current cooling devices from HAL:
+Temperature static thresholds from HAL:
+    TemperatureThreshold{mType=2, mName=BAT, mHotThrottlingThresholds=[NaN, NaN, NaN, NaN, NaN, 55.0, 85.0], mColdThrottlingThresholds=[NaN, NaN, NaN, NaN, NaN, NaN, NaN]}
+    TemperatureThreshold{mType=3, mName=SKIN, mHotThrottlingThresholds=[36.0, 38.0, 40.0, 42.0, 45.0, NaN, NaN], mColdThrottlingThresholds=[NaN, NaN, NaN, NaN, NaN, NaN, NaN]}"""
+    # pylint: enable=line-too-long
+    temperature_data = high._ParseThermalServiceOutput(dumpsys_output)
+    self.assertEqual(
+        temperature_data, {
+            'AP': 19.1,
+            'BAT': 18.6,
+            'CP': 19.0,
+            'PA': 19.1,
+            'SKIN': 21.7,
+            'USB': 19.4,
+        })
+
+  def test_temperature_parsing_malformed_line(self):
+    """Tests behavior when a malformed temperature line is present."""
+    dumpsys_output = """
+Current temperatures from HAL:
+    Temperature{mValue=19.1, mType=0, mName=AP, mStatus=0}
+    Temperature{malformed
+    Temperature{mValue=19.4, mType=4, mName=USB, mStatus=0}"""
+    with self.assertLogs(level='ERROR') as log_manager:
+      temperature_data = high._ParseThermalServiceOutput(dumpsys_output)
+      self.assertIn(
+          'ERROR:adb.high:Unable to find expected temperature data in line '
+          "'Temperature{malformed'", log_manager.output)
+    self.assertEqual(temperature_data, {
+        'AP': 19.1,
+        'USB': 19.4,
+    })
+
+  def test_temperature_parsing_invalid_float(self):
+    """Tests behavior when a non-float value is found."""
+    dumpsys_output = """
+Current temperatures from HAL:
+    Temperature{mValue=19.1, mType=0, mName=AP, mStatus=0}
+    Temperature{mValue=VeryHot, mType=3, mName=SKIN, mStatus=0}
+    Temperature{mValue=19.4, mType=4, mName=USB, mStatus=0}"""
+    with self.assertLogs(level='ERROR') as log_manager:
+      temperature_data = high._ParseThermalServiceOutput(dumpsys_output)
+      self.assertIn("ERROR:adb.high:Unable to parse float from 'VeryHot'",
+                    log_manager.output)
+    self.assertEqual(temperature_data, {
+        'AP': 19.1,
+        'USB': 19.4,
+    })
+
+  def test_temperature_parsing_no_data(self):
+    """Tests behavior when no temperature data is found."""
+    dumpsys_output = """
+Cached temperatures:
+    Temperature{mValue=0.0, mType=2, mName=SUBBAT, mStatus=0}"""
+    with self.assertLogs(level='WARNING') as log_manager:
+      previous_level = high._LOG.level
+      high._LOG.setLevel(logging.WARNING)
+      try:
+        temperature_data = high._ParseThermalServiceOutput(dumpsys_output)
+      finally:
+        high._LOG.setLevel(previous_level)
+      self.assertIn(
+          'WARNING:adb.high:Did not find any data using fallback temperature '
+          'path',
+          log_manager.output)
+    self.assertEqual(temperature_data, {})
 
 
 if __name__ == '__main__':
