@@ -933,27 +933,20 @@ class HighDevice(object):
 
     # Check if the boot animation has stopped.
     prop = self.GetProp('init.svc.bootanim')
-    if prop is None:
-      return False, 'could not get init.svc.bootanim property'
-    elif prop != 'stopped':
+    if prop and prop != 'stopped':
       return False, 'boot animation still running'
+    if not prop:
+      prop = self.GetProp('service.bootanim.exit')
+      if prop and prop != '1':
+        return False, 'boot animation still running'
+    if prop is None:
+      return False, 'could not get bootanim properties'
 
     # pm can be very slow at times. Use a longer timeout to prevent
     # confusing a long-running command with an interrupted connection.
-    out, exit_code = self.Shell('pm path', timeout_ms=30000)
-    if out is None:
-      logging.warning('pm path (%s): failed', exit_code)
-      return False, 'pm not ready'
-    if ('Error: no package specified' not in out and
-        'Argument expected after "path"' not in out):
-      # Accepts an empty string too, which has been observed only on Android 4.4
-      # (Kitkat) but not on later versions.
-      if out not in (
-          'Error: Could not access the Package Manager.  Is the system '
-          'running?\n',
-          ''):
-        logging.warning(
-            'Unexpected reply from pm path (%d): %r', exit_code, out)
+    out, exit_code = self.Shell('pm path android', timeout_ms=30000)
+    if out is None or exit_code:
+      logging.warning('pm path failed with %d: %s', exit_code, out)
       return False, 'pm not ready'
 
     # All checks passed.
