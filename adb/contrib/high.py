@@ -117,7 +117,7 @@ def _ParcelToList(lines):
   return out
 
 
-def _InitCache(device):
+def _InitCache(device, reset=False):
   """Primes data known to be fetched soon right away that is static for the
   lifetime of the device.
 
@@ -125,76 +125,79 @@ def _InitCache(device):
   and responsive.
   """
   cache = _PER_DEVICE_CACHE.get(device)
-  if not cache:
-    # TODO(maruel): This doesn't seem super useful since the following symlinks
-    # already exist: /sdcard/, /mnt/sdcard, /storage/sdcard0.
-    external_storage_path, exitcode = device.Shell('echo -n $EXTERNAL_STORAGE')
-    if exitcode:
-      external_storage_path = None
+  if cache and not reset:
+    return cache
 
-    properties = {}
-    out = device.PullContent('/system/build.prop')
-    if out:
+  # TODO(maruel): This doesn't seem super useful since the following symlinks
+  # already exist: /sdcard/, /mnt/sdcard, /storage/sdcard0.
+  external_storage_path, exitcode = device.Shell('echo -n $EXTERNAL_STORAGE')
+  if exitcode:
+    external_storage_path = None
+
+  properties = {}
+  out = device.PullContent('/system/build.prop')
+  if out:
+    for line in out.splitlines():
+      if line.startswith(u'#') or not line:
+        continue
+      if line.startswith('import '):
+        # That's a new-style import line. For now just ignore it as we do not
+        # need it for now.
+        continue
+      key, value = line.split(u'=', 1)
+      properties[key] = value
+  else:
+    # /system/build.prop isn't world-readable in Oreo, so populate the cache
+    # with getprop directly.
+    out, exit_code = device.Shell('getprop | grep -E "ro.(build|product)"')
+    if exit_code != 0:
+      _LOG.warning('Unable to fetch build properties: %s', out)
+    else:
       for line in out.splitlines():
-        if line.startswith(u'#') or not line:
-          continue
-        if line.startswith('import '):
-          # That's a new-style import line. For now just ignore it as we do not
-          # need it for now.
-          continue
-        key, value = line.split(u'=', 1)
-        properties[key] = value
-    else:
-      # /system/build.prop isn't world-readable in Oreo, so populate the cache
-      # with getprop directly.
-      out, exit_code = device.Shell('getprop | grep -E "ro.(build|product)"')
-      if exit_code != 0:
-        _LOG.warning('Unable to fetch build properties: %s', out)
-      else:
-        for line in out.splitlines():
-          match = re.match(r'\[(\S+)\]\: \[(\S+)\]', line)
-          if match:
-            properties[match.group(1)] = match.group(2)
+        match = re.match(r'\[(\S+)\]\: \[(\S+)\]', line)
+        if match:
+          properties[match.group(1)] = match.group(2)
 
-    mode, _, _ = device.Stat('/system/xbin/su')
-    has_su = bool(mode)
-    # Stat'ing /system/xbin/su directly from adbd outside of a shell can fail
-    # due to SELinux permission errors. Try again by executing su via shell.
-    if not has_su:
-      out, exit_code = device.Shell('/system/xbin/su root whoami')
-      if not exit_code and out and out.strip() == 'root':
-        has_su = True
+  mode, _, _ = device.Stat('/system/xbin/su')
+  has_su = bool(mode)
+  # Stat'ing /system/xbin/su directly from adbd outside of a shell can fail
+  # due to SELinux permission errors. Try again by executing su via shell.
+  if not has_su:
+    out, exit_code = device.Shell('/system/xbin/su root whoami')
+    if not exit_code and out and out.strip() == 'root':
+      has_su = True
 
-    available_governors = KNOWN_CPU_SCALING_GOVERNOR_VALUES
-    out = device.PullContent(
-        '/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors')
-    if out:
-      available_governors = sorted(i for i in out.split())
-      assert set(available_governors).intersection(
-          KNOWN_CPU_SCALING_GOVERNOR_VALUES), available_governors
+  available_governors = KNOWN_CPU_SCALING_GOVERNOR_VALUES
+  out = device.PullContent(
+      '/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors')
+  if out:
+    available_governors = sorted(i for i in out.split())
+    assert set(available_governors).intersection(
+        KNOWN_CPU_SCALING_GOVERNOR_VALUES), available_governors
 
-    available_frequencies = device.PullContent(
-        '/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies')
-    if available_frequencies:
-      available_frequencies = sorted(
-          int(i) for i in available_frequencies.strip().split())
-    else:
-      # It's possibly an older kernel. In that case, query the min/max instead.
-      scaling_min_freq = device.PullContent(
-          '/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq')
-      scaling_max_freq = device.PullContent(
-          '/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq')
-      if scaling_min_freq and scaling_max_freq:
-        # In practice there's more CPU speeds than this but there's no way (?)
-        # to query this information.
-        available_frequencies = [int(scaling_min_freq), int(scaling_max_freq)]
+  available_frequencies = device.PullContent(
+      '/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies')
+  if available_frequencies:
+    available_frequencies = sorted(
+        int(i) for i in available_frequencies.strip().split())
+  else:
+    # It's possibly an older kernel. In that case, query the min/max instead.
+    scaling_min_freq = device.PullContent(
+        '/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq')
+    scaling_max_freq = device.PullContent(
+        '/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq')
+    if scaling_min_freq and scaling_max_freq:
+      # In practice there's more CPU speeds than this but there's no way (?)
+      # to query this information.
+      available_frequencies = [int(scaling_min_freq), int(scaling_max_freq)]
 
+  if not cache:
     cache = DeviceCache(
         properties, external_storage_path, has_su,
         available_frequencies, available_governors)
-    # Only save the cache if all the calls above worked.
-    if all(i is not None for i in cache._asdict().values()):
-      _PER_DEVICE_CACHE.set(device, cache)
+  # Only save the cache if all the calls above worked.
+  if all(i is not None for i in cache._asdict().values()):
+    _PER_DEVICE_CACHE.set(device, cache)
   return cache
 
 
@@ -286,7 +289,7 @@ def Initialize(pub_key, priv_key):
     return _ADB_KEYS[:]
 
 
-def _ConnectFromHandles(handles, as_root=False, **kwargs):
+def _ConnectFromHandles(handles, as_root=False, reset_cache=False, **kwargs):
   """Connects to the devices provided by handles."""
   def fn(handle):
     device = HighDevice.Connect(handle, **kwargs)
@@ -370,7 +373,7 @@ def GetRemoteDevices(banner, endpoints, default_timeout_ms, auth_timeout_ms,
   return _ConnectFromHandles(handles, banner=banner,
                              default_timeout_ms=default_timeout_ms,
                              auth_timeout_ms=auth_timeout_ms, on_error=on_error,
-                             as_root=as_root)
+                             as_root=as_root, reset_cache=True)
 
 
 def CloseDevices(devices):
@@ -1099,13 +1102,13 @@ class HighDevice(object):
     return out
 
   @classmethod
-  def _Connect(cls, constructor, **kwargs):
+  def _Connect(cls, constructor, reset_cache=False, **kwargs):
     """Called by either ConnectDevice or Connect."""
     if not kwargs.get('rsa_keys'):
       with _ADB_KEYS_LOCK:
         kwargs['rsa_keys'] = _ADB_KEYS[:]
     device = constructor(**kwargs)
-    return HighDevice(device, _InitCache(device))
+    return HighDevice(device, _InitCache(device, reset=reset_cache))
 
 
 def _ParseThermalServiceOutput(output):
