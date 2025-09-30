@@ -191,7 +191,7 @@ def _InitCache(device, reset=False):
       # to query this information.
       available_frequencies = [int(scaling_min_freq), int(scaling_max_freq)]
 
-  if not cache:
+  if not cache or reset:
     cache = DeviceCache(
         properties, external_storage_path, has_su,
         available_frequencies, available_governors)
@@ -292,7 +292,7 @@ def Initialize(pub_key, priv_key):
 def _ConnectFromHandles(handles, as_root=False, reset_cache=False, **kwargs):
   """Connects to the devices provided by handles."""
   def fn(handle):
-    device = HighDevice.Connect(handle, **kwargs)
+    device = HighDevice.Connect(handle, reset_cache=reset_cache, **kwargs)
     if as_root and device.cache.has_su and not device.IsRoot():
       # This updates the port path of the device thus clears its cache.
       device.Root()
