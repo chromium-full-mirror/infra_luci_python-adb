@@ -24,10 +24,10 @@ from __future__ import absolute_import
 import collections
 import logging
 import os
-import pipes
 import posixpath
 import random
 import re
+import shlex
 import string
 import threading
 import time
@@ -884,7 +884,7 @@ class HighDevice(object):
     dest = posixpath.join(destdir, os.path.basename(apk))
     if not self.Push(apk, dest):
       return False
-    cmd = 'pm install -r %s' % pipes.quote(dest)
+    cmd = 'pm install -r %s' % shlex.quote(dest)
     out, exit_code = self.Shell(cmd)
     if not exit_code:
       return True
@@ -896,13 +896,13 @@ class HighDevice(object):
     cmd = 'pm uninstall'
     if user is not None:
       cmd += ' --user %s' % user
-    cmd += ' %s' % pipes.quote(package)
+    cmd += ' %s' % shlex.quote(package)
     out, exit_code = self.Shell(cmd)
     # pm can exit with 0 even if it fails to uninstall, and who knows if the
     # output can be reliably parsed. So only return success if the package
     # is missing afterwards.
     if not exit_code:
-      out, _ = self.Shell('pm path %s' % pipes.quote(package))
+      out, _ = self.Shell('pm path %s' % shlex.quote(package))
       # Ignore the exit code of "pm path" since it can't be trusted. (On K, it
       # always returns 0.)
       if out is not None and 'package:' not in out:
@@ -912,7 +912,7 @@ class HighDevice(object):
 
   def GetApplicationPath(self, package):
     # TODO(maruel): Test.
-    out, _ = self.Shell('pm path %s' % pipes.quote(package))
+    out, _ = self.Shell('pm path %s' % shlex.quote(package))
     return out.strip().split(':', 1)[1] if out else out
 
   def IsFullyBooted(self, skip_sd_card=False):
@@ -1080,7 +1080,7 @@ class HighDevice(object):
       self.Shell('rm %s' % script)
 
   def GetProp(self, prop):
-    out, exit_code = self.Shell('getprop %s' % pipes.quote(prop))
+    out, exit_code = self.Shell('getprop %s' % shlex.quote(prop))
     if exit_code != 0:
       return None
     return out.rstrip()
