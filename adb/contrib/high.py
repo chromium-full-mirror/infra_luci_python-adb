@@ -135,28 +135,14 @@ def _InitCache(device, reset=False):
     external_storage_path = None
 
   properties = {}
-  out = device.PullContent('/system/build.prop')
-  if out:
-    for line in out.splitlines():
-      if line.startswith(u'#') or not line:
-        continue
-      if line.startswith('import '):
-        # That's a new-style import line. For now just ignore it as we do not
-        # need it for now.
-        continue
-      key, value = line.split(u'=', 1)
-      properties[key] = value
+  out, exit_code = device.Shell('getprop | grep -E "ro.(build|product)"')
+  if out is None or exit_code:
+    _LOG.warning('Unable to fetch build properties: %s', out)
   else:
-    # /system/build.prop isn't world-readable in Oreo, so populate the cache
-    # with getprop directly.
-    out, exit_code = device.Shell('getprop | grep -E "ro.(build|product)"')
-    if exit_code != 0:
-      _LOG.warning('Unable to fetch build properties: %s', out)
-    else:
-      for line in out.splitlines():
-        match = re.match(r'\[(\S+)\]\: \[(\S+)\]', line)
-        if match:
-          properties[match.group(1)] = match.group(2)
+    for line in out.splitlines():
+      match = re.match(r'\[(\S+)\]\: \[(\S+)\]', line)
+      if match:
+        properties[match.group(1)] = match.group(2)
 
   mode, _, _ = device.Stat('/system/xbin/su')
   has_su = bool(mode)
