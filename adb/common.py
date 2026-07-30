@@ -442,7 +442,8 @@ class TcpHandle(Handle):
     serial = self.serial_number
     _LOG.info('Open() on connection to %s', serial)
     try:
-      self._connection = socket.create_connection((self._host, self._port))
+      self._connection = socket.create_connection(
+          (self._host, self._port), timeout=self._timeout_ms / 1000.0)
       self._connection.settimeout(self._timeout_ms / 1000.0)
     except Exception as e:
       _LOG.exception('Open() on %s: Exception: %s', serial, e)

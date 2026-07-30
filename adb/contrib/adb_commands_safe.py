@@ -847,7 +847,9 @@ class AdbCommandsSafe(object):
           return True
         except (common.usb1.USBErrorNoDevice,
                 common.usb1.USBErrorNotFound,
-                ConnectionRefusedError) as e:
+                ConnectionRefusedError,
+                TimeoutError,
+                socket.error) as e:
           _LOG.warning(
               '%s._OpenHandle(): %s: %s', self.port_path, e.__class__.__name__,
               e)
