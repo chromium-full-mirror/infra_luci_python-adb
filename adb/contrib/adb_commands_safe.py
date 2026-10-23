@@ -156,7 +156,8 @@ class AdbCommandsSafe(object):
     # State.
     self._adb_cmd = None
     self._needs_su = False
-    self._serial = None
+    self._serial = (
+        handle.serial_number if (handle and not handle.is_local) else None)
     self._failure = None
     self._handle = handle
     self._port_path = '/'.join(str(p) for p in port_path) if port_path else None
@@ -474,14 +475,20 @@ class AdbCommandsSafe(object):
       new_endpoint: If a TCP device, this will be used as the new endpoint in
                     the TCP connection.
     Returns:
-      True on success.
+      True on success. False if the handle couldn't be reset, in which case
+      it is closed.
     """
     if self._adb_cmd:
       self._adb_cmd.Close()
       self._adb_cmd = None
-    if new_endpoint:
-      self._serial = None
+    if not self._handle:
+      return False
     self._handle.Reset(new_endpoint=new_endpoint)
+    if new_endpoint:
+      self._serial = self._handle.serial_number
+    if not self._handle.is_open:
+      self.Close()
+      return False
     return self._Connect(False)
 
   def ReconnectViaSerial(self):
@@ -795,7 +802,7 @@ class AdbCommandsSafe(object):
             '%s._Find(%s) %s = %s',
             previous_port_path, use_serial, self._serial,
             self.port_path if self._handle else 'None')
-      else:
+      elif self._serial:
         self._handle = common.TcpHandle(self._serial)
     except (common.usb1.USBError, usb_exceptions.DeviceNotFoundError) as e:
       _LOG.debug(

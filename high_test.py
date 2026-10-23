@@ -16,10 +16,14 @@
 from __future__ import absolute_import
 
 import logging
+import socket
 import sys
 import unittest
 from unittest import mock
 
+from adb import common
+from adb import usb_exceptions
+from adb.contrib import adb_commands_safe
 from adb.contrib import high
 
 
@@ -201,6 +205,186 @@ Cached temperatures:
           'path',
           log_manager.output)
     self.assertEqual(temperature_data, {})
+
+
+class FakeSocket(object):
+  """Minimal stand-in for a connected socket.socket."""
+
+  def __init__(self, recv_error=None, send_error=None):
+    self.recv_error = recv_error
+    self.send_error = send_error
+    self.closed = False
+
+  def settimeout(self, _timeout):
+    pass
+
+  def sendall(self, _data):
+    if self.send_error:
+      raise self.send_error
+
+  def recv(self, _length):
+    if self.recv_error:
+      raise self.recv_error
+    return b''
+
+  def close(self):
+    self.closed = True
+
+
+class TestTcpHandleErrors(unittest.TestCase):
+  def setUp(self):
+    super(TestTcpHandleErrors, self).setUp()
+    patcher = mock.patch.object(common.socket, 'create_connection')
+    self.create_connection = patcher.start()
+    self.addCleanup(patcher.stop)
+
+  def _open_handle(self, sock):
+    self.create_connection.return_value = sock
+    handle = common.TcpHandle('test_host:5555')
+    handle.Open()
+    return handle
+
+  def test_reset_does_not_raise_when_unreachable(self):
+    self.create_connection.side_effect = ConnectionRefusedError(
+        111, 'Connection refused')
+    handle = common.TcpHandle('test_host:5555')
+    handle.Reset()
+    self.assertFalse(handle.is_open)
+    self.assertEqual(handle.serial_number, 'test_host:5555')
+
+  def test_reset_new_endpoint_updates_serial_when_unreachable(self):
+    self.create_connection.side_effect = socket.timeout('timed out')
+    handle = common.TcpHandle('test_host:5555')
+    handle.Reset(new_endpoint='other_host:5556')
+    self.assertFalse(handle.is_open)
+    self.assertEqual(handle.serial_number, 'other_host:5556')
+
+  def test_reset_reopens(self):
+    old, new = FakeSocket(), FakeSocket()
+    self.create_connection.side_effect = [old, new]
+    handle = common.TcpHandle('test_host:5555')
+    handle.Open()
+    handle.Reset()
+    self.assertTrue(handle.is_open)
+    self.assertTrue(old.closed)
+    self.assertFalse(new.closed)
+
+  def test_bulk_read_wraps_connection_reset(self):
+    error = ConnectionResetError(104, 'Connection reset by peer')
+    handle = self._open_handle(FakeSocket(recv_error=error))
+    with self.assertRaises(usb_exceptions.ReadFailedError) as cm:
+      handle.BulkRead(24)
+    self.assertIs(cm.exception.usb_error, error)
+    self.assertIn('test_host:5555', str(cm.exception))
+    self.assertNotIn('timeout', str(cm.exception))
+
+  def test_bulk_read_timeout_message(self):
+    handle = self._open_handle(
+        FakeSocket(recv_error=socket.timeout('timed out')))
+    with self.assertRaises(usb_exceptions.ReadFailedError) as cm:
+      handle.BulkRead(24)
+    self.assertIn('(timeout 1000ms)', str(cm.exception))
+
+  def test_bulk_read_connection_closed(self):
+    handle = self._open_handle(FakeSocket())
+    with self.assertRaises(usb_exceptions.ReadFailedError) as cm:
+      handle.BulkRead(24)
+    self.assertIsNone(cm.exception.usb_error)
+    self.assertIn('Connection closed by remote end', str(cm.exception))
+
+  def test_bulk_write_wraps_broken_pipe(self):
+    error = BrokenPipeError(32, 'Broken pipe')
+    handle = self._open_handle(FakeSocket(send_error=error))
+    with self.assertRaises(usb_exceptions.ReadFailedError) as cm:
+      handle.BulkWrite(b'data')
+    self.assertIs(cm.exception.usb_error, error)
+    self.assertNotIn('timeout', str(cm.exception))
+
+  def test_bulk_write_timeout_message(self):
+    handle = self._open_handle(
+        FakeSocket(send_error=socket.timeout('timed out')))
+    with self.assertRaises(usb_exceptions.ReadFailedError) as cm:
+      handle.BulkWrite(b'data')
+    self.assertIn('(timeout 1000ms)', str(cm.exception))
+
+
+class TestTcpReconnectAndReset(unittest.TestCase):
+  def setUp(self):
+    super(TestTcpReconnectAndReset, self).setUp()
+    patcher = mock.patch.object(common.socket, 'create_connection')
+    self.create_connection = patcher.start()
+    self.addCleanup(patcher.stop)
+
+  def _new(self, **kwargs):
+    return adb_commands_safe.AdbCommandsSafe(
+        handle=common.TcpHandle('test_host:5555'), banner=b'test', rsa_keys=[],
+        on_error=None, lost_timeout_ms=100, **kwargs)
+
+  def test_tcp_reset_and_reconnect_handle_socket_errors(self):
+    self.create_connection.side_effect = ConnectionRefusedError(
+        111, 'Connection refused')
+    dev = adb_commands_safe.AdbCommandsSafe.Connect(
+        common.TcpHandle('test_host:5555'),
+        banner=b'test',
+        rsa_keys=[],
+        on_error=None,
+        lost_timeout_ms=100)
+    self.assertFalse(dev.is_valid)
+    self.assertFalse(dev.has_handle)
+    self.assertEqual(dev.serial, 'test_host:5555')
+    self.assertEqual(self.create_connection.call_count, 1)
+
+    # ReconnectViaSerial should use preserved TCP serial and not raise
+    # TypeError or OSError when the TCP endpoint remains unreachable.
+    dev.ReconnectViaSerial()
+    self.assertFalse(dev.has_handle)
+    self.assertEqual(self.create_connection.call_count, 2)
+
+    # ResetHandle should not raise, and should close the handle.
+    dev._handle = common.TcpHandle('test_host:5555')
+    self.assertFalse(dev.ResetHandle())
+    self.assertFalse(dev.has_handle)
+    self.assertEqual(dev.serial, 'test_host:5555')
+    self.assertEqual(self.create_connection.call_count, 3)
+
+  def test_connection_reset_during_handshake(self):
+    # A connection reset during the CNXN handshake used to escape _Connect()
+    # as a raw ConnectionResetError and crash bot hooks.
+    self.create_connection.side_effect = lambda *_args, **_kwargs: FakeSocket(
+        recv_error=ConnectionResetError(104, 'Connection reset by peer'))
+    dev = adb_commands_safe.AdbCommandsSafe.Connect(
+        common.TcpHandle('test_host:5555'),
+        banner=b'test',
+        rsa_keys=[],
+        on_error=None,
+        lost_timeout_ms=100)
+    self.assertFalse(dev.is_valid)
+    self.assertEqual(dev.failure, 'usb_failure')
+
+  def test_reset_handle_new_endpoint_when_unreachable(self):
+    dev = self._new()
+    self.create_connection.side_effect = ConnectionRefusedError(
+        111, 'Connection refused')
+    self.assertFalse(dev.ResetHandle(new_endpoint='other_host:5556'))
+    self.assertFalse(dev.has_handle)
+    self.assertEqual(dev.serial, 'other_host:5556')
+    # A later reconnect uses the new endpoint.
+    dev.ReconnectViaSerial()
+    self.assertEqual(
+        self.create_connection.call_args[0][0], ('other_host', '5556'))
+
+  def test_find_recreates_tcp_handle_with_default_timeout(self):
+    dev = self._new(default_timeout_ms=10000)
+    dev.Close()
+    self.assertTrue(dev._Find(use_serial=False))
+    self.assertEqual(dev._handle.serial_number, 'test_host:5555')
+    self.assertEqual(dev._handle.Timeout(None), common.DEFAULT_TIMEOUT_MS)
+
+  def test_serial_not_preset_for_local_handles(self):
+    dev = adb_commands_safe.AdbCommandsSafe(
+        handle=common.Handle(serial='usb_serial'), banner=b'test', rsa_keys=[],
+        on_error=None)
+    self.assertIsNone(dev.serial)
 
 
 if __name__ == '__main__':

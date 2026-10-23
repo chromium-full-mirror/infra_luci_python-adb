@@ -459,6 +459,11 @@ class TcpHandle(Handle):
       self._connection = None
 
   def Reset(self, new_endpoint=None):
+    """Closes and reopens the TCP connection.
+
+    Like UsbHandle.Reset(), this doesn't raise if the device can't be
+    reached; the handle is left closed instead. Check is_open afterwards.
+    """
     self.Close()
     if new_endpoint:
       if ':' in new_endpoint:
@@ -467,7 +472,12 @@ class TcpHandle(Handle):
         self._host = new_endpoint
         self._port = 5555
     self._serial_number = '%s:%s' % (self._host, self._port)
-    self.Open()
+    try:
+      self.Open()
+    except socket.error as e:
+      # E.g. refused, unreachable or timed out while the device reboots.
+      # Open() already logged the details and closed the socket.
+      _LOG.error('Could not reset connection to %s: %s', self._serial_number, e)
 
   def BulkWrite(self, data, timeout_ms=None):
     try:
@@ -476,6 +486,12 @@ class TcpHandle(Handle):
     except socket.timeout as e:
       raise usb_exceptions.ReadFailedError(
           'Could not send data (timeout %sms)' % (self.Timeout(timeout_ms)), e)
+    except socket.error as e:
+      # E.g. the connection was reset because adbd restarted or the device
+      # rebooted. Wrap it like UsbHandle wraps every USBError, so that the adb
+      # protocol layer handles it as an I/O failure.
+      raise usb_exceptions.ReadFailedError(
+          'Could not send data to %s: %s' % (self.serial_number, e), e)
 
   def BulkRead(self, length, timeout_ms=None):
     self._connection.settimeout(self.Timeout(timeout_ms) / 1000.0)
@@ -483,12 +499,16 @@ class TcpHandle(Handle):
     while len(data) < length:
       try:
         chunk = self._connection.recv(length - len(data))
-        if not chunk:
-          raise usb_exceptions.ReadFailedError(
-            'Connection closed by remote end during read', None)
-        data += chunk
       except socket.timeout as e:
         raise usb_exceptions.ReadFailedError(
           'Could not receive data (timeout %sms)' % (
             self.Timeout(timeout_ms)), e)
+      except socket.error as e:
+        # See BulkWrite().
+        raise usb_exceptions.ReadFailedError(
+          'Could not receive data from %s: %s' % (self.serial_number, e), e)
+      if not chunk:
+        raise usb_exceptions.ReadFailedError(
+          'Connection closed by remote end during read', None)
+      data += chunk
     return data
